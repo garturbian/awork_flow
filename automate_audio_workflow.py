@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 work_q = queue.Queue()
 
 def worker_loop():
-    """Worker thread function that processes WAV files from the queue."""
+    """Worker thread function that processes tasks from the queue."""
     while True:
         task = work_q.get()
         if task is None:
@@ -41,7 +41,40 @@ def worker_loop():
         try:
             base = task
             logger.info("Worker starting processing for %s", base)
-            process_wav_file(base)  # unchanged function – will run in worker
+            
+            # Load metadata to determine which steps to run
+            m = load_meta(base)
+            
+            if m.get("steps_completed", {}).get("process_audio"):
+                # Run steps 2 and 3 only if missing
+                if not m.get("steps_completed", {}).get("ass_to_srt"):
+                    step2_ass_to_srt(base)
+                    # Update metadata
+                    meta = load_meta(base)
+                    meta.setdefault("steps_completed", {})["ass_to_srt"] = True
+                    meta["last_updated"] = datetime.datetime.utcnow().isoformat()
+                    save_meta(base, meta)
+                    
+                if not m.get("steps_completed", {}).get("translate"):
+                    step3_translate_srt(base)
+                    # Update metadata
+                    meta = load_meta(base)
+                    meta.setdefault("steps_completed", {})["translate"] = True
+                    meta["last_updated"] = datetime.datetime.utcnow().isoformat()
+                    save_meta(base, meta)
+            else:
+                # Run full sequence
+                step1_process_audio(base)
+                step2_ass_to_srt(base)
+                step3_translate_srt(base)
+                
+                # Update metadata for steps 2 and 3
+                meta = load_meta(base)
+                meta.setdefault("steps_completed", {})["ass_to_srt"] = True
+                meta.setdefault("steps_completed", {})["translate"] = True
+                meta["last_updated"] = datetime.datetime.utcnow().isoformat()
+                save_meta(base, meta)
+                        
         except Exception:
             logger.exception("Worker error processing %s", base)
         finally:
@@ -174,6 +207,56 @@ def step3_translate_srt(base):
         cwd=SCRIPT_DIR
     )
     logger.info("[Step 3] translate_srt_to_chinese.bat completed successfully.")
+    
+    # Move all output files to the Work_room folder after completion
+    output_files = [
+        f"{base}.ass",
+        f"{base}.srt",
+        f"{base}.mp4",
+        f"{base}_zh-tw.srt"
+    ]
+    
+    for file in output_files:
+        src_path = os.path.join(SCRIPT_DIR, file)
+        dst_path = os.path.join(WATCHED_FOLDER_PATH, file)
+        if os.path.exists(src_path):
+            try:
+                shutil.move(src_path, dst_path)
+                logger.info("         Moved %s to Work_room folder", file)
+            except Exception as e:
+                logger.warning("         Could not move %s to Work_room folder: %s", file, e)
+
+
+# --- File Event Handlers ---
+class AssModifiedHandler(FileSystemEventHandler):
+    """Handles file system events for .ass file modifications."""
+    
+    def on_modified(self, event):
+        """Triggered when a file or directory is modified."""
+        if event.is_directory:
+            return
+        if not event.src_path.lower().endswith(".ass"):
+            return
+            
+        base = os.path.splitext(os.path.basename(event.src_path))[0]
+        try:
+            # wait until stable then compute hash
+            if not wait_until_stable(event.src_path):
+                logger.warning("Edited .ass %s did not stabilize", event.src_path)
+                return
+            new_hash = file_hash(event.src_path)
+        except Exception:
+            return
+            
+        meta = load_meta(base)
+        old_hash = meta.get("ass_hash")
+        if old_hash != new_hash:
+            logger.info("Detected edited .ass for %s — scheduling downstream steps", base)
+            meta["ass_hash"] = new_hash
+            meta.setdefault("steps_completed", {}).pop("ass_to_srt", None)
+            meta.setdefault("steps_completed", {}).pop("translate", None)
+            save_meta(base, meta)
+            work_q.put(base)  # worker should be adjusted to run only step2+3 if meta shows process_audio done
 
 
 # --- Helper Functions ---
@@ -292,12 +375,14 @@ def main():
         logger.error("             Please ensure ffmpeg.exe is in the script directory or adjust FFMPEG_PATH.")
         sys.exit(1)
 
-    # Create the event handler and observer
-    event_handler = WavHandler()
+    # Create the event handlers and observers
+    wav_handler = WavHandler()
+    ass_handler = AssModifiedHandler()
     observer = Observer()
     
     # Schedule the observer to watch the specified folder for events
-    observer.schedule(event_handler, WATCHED_FOLDER_PATH, recursive=False)
+    observer.schedule(wav_handler, WATCHED_FOLDER_PATH, recursive=False)
+    observer.schedule(ass_handler, SCRIPT_DIR, recursive=False)
 
     # Start the observer in a background thread
     observer.start()
