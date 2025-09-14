@@ -21,6 +21,10 @@ WATCHED_FOLDER_NAME = "Work_room"
 # This ensures paths are correct regardless of where the script is executed from
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
+# Directory for intermediate artifacts
+ARTIFACTS_DIR = os.path.join(SCRIPT_DIR, "artifacts")
+os.makedirs(ARTIFACTS_DIR, exist_ok=True)
+
 # Set up logging
 logging.basicConfig(
     level=logging.INFO,
@@ -162,12 +166,27 @@ def step1_process_audio(base):
         meta["last_updated"] = datetime.datetime.utcnow().isoformat()
         save_meta(base, meta)
         
+        # Move intermediate files to artifacts directory
+        artifacts_dir = os.path.join(ARTIFACTS_DIR, base)
+        os.makedirs(artifacts_dir, exist_ok=True)
+        
+        # Move the .ass file to artifacts directory
+        artifacts_ass_file = os.path.join(artifacts_dir, f"{base}.ass")
+        shutil.move(ass_file, artifacts_ass_file)
+        logger.info("Moved %s to artifacts directory", f"{base}.ass")
+        
+        # Also move the .ass.orig file to artifacts directory
+        orig_artifacts = os.path.join(artifacts_dir, f"{base}.ass.orig")
+        if os.path.exists(orig):
+            shutil.move(orig, orig_artifacts)
+            logger.info("Moved %s to artifacts directory", f"{base}.ass.orig")
+        
         # Provide convenience function to open the .ass file
         try:
-            os.startfile(ass_file)
-            logger.info("Opened %s in default editor", ass_file)
+            os.startfile(artifacts_ass_file)
+            logger.info("Opened %s in default editor", artifacts_ass_file)
         except Exception as e:
-            logger.debug("Could not open %s: %s", ass_file, e)
+            logger.debug("Could not open %s: %s", artifacts_ass_file, e)
 
 
 def step2_ass_to_srt(base):
@@ -181,8 +200,9 @@ def step2_ass_to_srt(base):
         subprocess.CalledProcessError: If the subprocess fails
     """
     logger.info("[Step 2] Converting '%s.ass' to '%s.srt'...", base, base)
-    # The batch script creates files in SCRIPT_DIR, not WATCHED_FOLDER_PATH
-    ass_file = os.path.join(SCRIPT_DIR, f"{base}.ass")
+    # Use the .ass file from artifacts directory
+    artifacts_dir = os.path.join(ARTIFACTS_DIR, base)
+    ass_file = os.path.join(artifacts_dir, f"{base}.ass")
     srt_file = os.path.join(SCRIPT_DIR, f"{base}.srt")
     
     # Run ffmpeg to convert .ass to .srt
@@ -228,6 +248,7 @@ def step3_translate_srt(base):
         f"{base}_zh-tw.srt"
     ]
     
+    # Move files from SCRIPT_DIR to Work_room
     for file in output_files:
         src_path = os.path.join(SCRIPT_DIR, file)
         dst_path = os.path.join(WATCHED_FOLDER_PATH, file)
@@ -237,6 +258,19 @@ def step3_translate_srt(base):
                 logger.info("         Moved %s to Work_room folder", file)
             except Exception as e:
                 logger.warning("         Could not move %s to Work_room folder: %s", file, e)
+    
+    # Also move the final files from artifacts directory to Work_room if they exist there
+    artifacts_dir = os.path.join(ARTIFACTS_DIR, base)
+    if os.path.exists(artifacts_dir):
+        for file in [f"{base}.ass", f"{base}.ass.orig"]:
+            src_path = os.path.join(artifacts_dir, file)
+            dst_path = os.path.join(WATCHED_FOLDER_PATH, file)
+            if os.path.exists(src_path):
+                try:
+                    shutil.move(src_path, dst_path)
+                    logger.info("         Moved %s from artifacts to Work_room folder", file)
+                except Exception as e:
+                    logger.warning("         Could not move %s from artifacts to Work_room folder: %s", file, e)
     
     # Provide convenience function to open the final translated SRT file
     final_srt = os.path.join(WATCHED_FOLDER_PATH, f"{base}_zh-tw.srt")
