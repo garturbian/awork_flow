@@ -9,6 +9,7 @@ import shutil
 import hashlib
 import json
 import datetime
+import argparse
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
@@ -352,6 +353,37 @@ def main():
     """
     Sets up the file watcher and starts the monitoring loop.
     """
+    # Parse command line arguments for resume functionality
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--resume", help="base filename to resume, without extension")
+    parser.add_argument("--from-step", type=int, default=2, choices=[1, 2, 3])
+    args = parser.parse_args()
+    
+    # Handle resume functionality if requested
+    if args.resume:
+        base = args.resume
+        if args.from_step <= 1:
+            # Full run
+            work_q.put(base)
+        elif args.from_step == 2:
+            # Mark process_audio done if needed and enqueue step2+3
+            m = load_meta(base)
+            m.setdefault("steps_completed", {})["process_audio"] = True
+            save_meta(base, m)
+            work_q.put(base)
+        elif args.from_step == 3:
+            # Mark both previous steps done if you want to just run translation
+            m = load_meta(base)
+            m.setdefault("steps_completed", {})["process_audio"] = True
+            m.setdefault("steps_completed", {})["ass_to_srt"] = True
+            save_meta(base, m)
+            work_q.put(base)
+        
+        # Process the queue item and exit
+        # Wait for the worker to finish
+        work_q.join()
+        return
+
     logger.info("Audio Workflow Automation Script Started.")
     logger.info("Watching folder: %s", WATCHED_FOLDER_PATH)
 
