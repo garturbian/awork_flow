@@ -6,14 +6,6 @@ import logging
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
-# Set up logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(message)s",
-    handlers=[logging.StreamHandler(), logging.FileHandler(os.path.join(SCRIPT_DIR, "audio_workflow.log"), encoding="utf-8")]
-)
-logger = logging.getLogger(__name__)
-
 # --- Configuration ---
 # Directory to watch for new .wav files (relative to this script's location)
 WATCHED_FOLDER_NAME = "Work_room"
@@ -22,7 +14,56 @@ WATCHED_FOLDER_NAME = "Work_room"
 # This ensures paths are correct regardless of where the script is executed from
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# Full path to the watched folder
+# Set up logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(message)s",
+    handlers=[logging.StreamHandler(), logging.FileHandler(os.path.join(SCRIPT_DIR, "audio_workflow.log"), encoding="utf-8")]
+)
+logger = logging.getLogger(__name__)
+
+
+# --- Helper Functions ---
+def wait_until_stable(path, timeout=60, stable_time=1.0, poll=0.5):
+    """
+    Wait until a file's size stabilizes, indicating it's finished being written.
+    
+    Args:
+        path (str): Path to the file to monitor
+        timeout (int): Maximum time to wait in seconds
+        stable_time (float): Time the file size must remain constant to be considered stable
+        poll (float): Interval between file size checks in seconds
+        
+    Returns:
+        bool: True if file stabilized, False if timeout was reached
+    """
+    start = time.time()
+    try:
+        last_size = os.path.getsize(path)
+    except Exception:
+        last_size = -1
+    stable_since = time.time()
+    
+    while True:
+        time.sleep(poll)
+        try:
+            size = os.path.getsize(path)
+        except Exception:
+            size = -1
+            
+        if size == last_size:
+            if time.time() - stable_since >= stable_time:
+                return True
+        else:
+            stable_since = time.time()
+            last_size = size
+            
+        if time.time() - start > timeout:
+            return False
+
+
+# --- Configuration ---
+# Directory to watch for new .wav files (relative to this script's location)
 WATCHED_FOLDER_PATH = os.path.join(SCRIPT_DIR, WATCHED_FOLDER_NAME)
 
 # Paths to the batch scripts (relative to SCRIPT_DIR)
@@ -51,6 +92,11 @@ class WavHandler(FileSystemEventHandler):
             # Check if the file has a .wav extension (case-insensitive)
             if file_path.lower().endswith('.wav'):
                 logger.info("[WAV File Detected] %s", file_path)
+                
+                # Wait until the file is completely written (size stabilizes)
+                if not wait_until_stable(file_path):
+                    logger.warning("File %s did not stabilize in time; skipping for now", file_path)
+                    return
                 
                 # Extract the base filename without the .wav extension
                 # e.g., "C:\path\work_room\myfile.wav" -> "myfile"
