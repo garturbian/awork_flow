@@ -6,6 +6,9 @@ import logging
 import queue
 import threading
 import shutil
+import hashlib
+import json
+import datetime
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
@@ -49,6 +52,38 @@ worker_thread = threading.Thread(target=worker_loop, daemon=True)
 worker_thread.start()
 
 
+# --- Metadata and File Hashing Helpers ---
+def meta_path(base):
+    """Return the path to the metadata file for a given base filename."""
+    return os.path.join(SCRIPT_DIR, f"{base}.meta.json")
+
+def file_hash(path):
+    """Calculate SHA256 hash of a file."""
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        while True:
+            chunk = fh.read(8192)
+            if not chunk:
+                break
+            h.update(chunk)
+    return h.hexdigest()
+
+def load_meta(base):
+    """Load metadata from file, returning empty dict if file doesn't exist."""
+    p = meta_path(base)
+    if os.path.exists(p):
+        with open(p, "r", encoding="utf-8") as fh:
+            return json.load(fh)
+    return {}
+
+def save_meta(base, meta):
+    """Save metadata to file atomically."""
+    tmp = meta_path(base) + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(meta, fh, indent=2, ensure_ascii=False)
+    os.replace(tmp, meta_path(base))
+
+
 # --- Step Functions ---
 def step1_process_audio(base):
     """
@@ -78,6 +113,16 @@ def step1_process_audio(base):
     ass_file = os.path.join(SCRIPT_DIR, f"{base}.ass")
     if not os.path.exists(ass_file):
         raise FileNotFoundError(f"Expected .ass file not found: {ass_file}")
+    
+    # After step1 succeeds, copy .ass to .ass.orig the first time and record hash and meta
+    orig = os.path.join(SCRIPT_DIR, f"{base}.ass.orig")
+    if not os.path.exists(orig):
+        shutil.copy2(ass_file, orig)
+        meta = load_meta(base)
+        meta["ass_hash"] = file_hash(ass_file)
+        meta.setdefault("steps_completed", {})["process_audio"] = True
+        meta["last_updated"] = datetime.datetime.utcnow().isoformat()
+        save_meta(base, meta)
 
 
 def step2_ass_to_srt(base):
