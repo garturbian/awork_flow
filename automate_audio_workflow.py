@@ -5,6 +5,7 @@ import time
 import logging
 import queue
 import threading
+import shutil
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
@@ -46,6 +47,88 @@ def worker_loop():
 # Start the worker thread
 worker_thread = threading.Thread(target=worker_loop, daemon=True)
 worker_thread.start()
+
+
+# --- Step Functions ---
+def step1_process_audio(base):
+    """
+    Step 1: Run process_audio.bat to generate ASS file from WAV.
+    
+    Args:
+        base (str): Base filename without extension
+        
+    Raises:
+        subprocess.CalledProcessError: If the subprocess fails
+        FileNotFoundError: If expected ASS file is not created
+    """
+    logger.info("[Step 1] Running process_audio.bat for '%s'...", base)
+    # The batch script expects the filename without extension and
+    # should be run from the script's directory
+    cmd = [PROCESS_AUDIO_SCRIPT, base]
+    subprocess.run(
+        cmd,
+        check=True,              # Raises CalledProcessError on non-zero exit
+        capture_output=True,     # Captures stdout and stderr
+        text=True,               # Returns strings, not bytes
+        cwd=SCRIPT_DIR           # Run in the script's directory
+    )
+    logger.info("[Step 1] process_audio.bat completed successfully.")
+    
+    # Check if the .ass file was actually created
+    ass_file = os.path.join(SCRIPT_DIR, f"{base}.ass")
+    if not os.path.exists(ass_file):
+        raise FileNotFoundError(f"Expected .ass file not found: {ass_file}")
+
+
+def step2_ass_to_srt(base):
+    """
+    Step 2: Convert generated .ass to .srt using ffmpeg.
+    
+    Args:
+        base (str): Base filename without extension
+        
+    Raises:
+        subprocess.CalledProcessError: If the subprocess fails
+    """
+    logger.info("[Step 2] Converting '%s.ass' to '%s.srt'...", base, base)
+    # The batch script creates files in SCRIPT_DIR, not WATCHED_FOLDER_PATH
+    ass_file = os.path.join(SCRIPT_DIR, f"{base}.ass")
+    srt_file = os.path.join(SCRIPT_DIR, f"{base}.srt")
+    
+    # Run ffmpeg to convert .ass to .srt
+    # Run it in the script directory
+    cmd = [FFMPEG_PATH, "-y", "-i", ass_file, srt_file]
+    subprocess.run(
+        cmd,
+        check=True,
+        capture_output=True,
+        text=True,
+        cwd=SCRIPT_DIR
+    )
+    logger.info("[Step 2] Conversion to .srt completed successfully.")
+
+
+def step3_translate_srt(base):
+    """
+    Step 3: Run translate_srt_to_chinese.bat to translate SRT file.
+    
+    Args:
+        base (str): Base filename without extension
+        
+    Raises:
+        subprocess.CalledProcessError: If the subprocess fails
+    """
+    logger.info("[Step 3] Running translate_srt_to_chinese.bat for '%s'...", base)
+    # The batch script expects the filename without extension
+    cmd = [TRANSLATE_SRT_SCRIPT, base]
+    subprocess.run(
+        cmd,
+        check=True,
+        capture_output=True,
+        text=True,
+        cwd=SCRIPT_DIR
+    )
+    logger.info("[Step 3] translate_srt_to_chinese.bat completed successfully.")
 
 
 # --- Helper Functions ---
@@ -133,105 +216,7 @@ class WavHandler(FileSystemEventHandler):
 
 
 # --- Core Processing Logic ---
-def process_wav_file(base_filename):
-    """
-    Executes the full workflow for a given .wav file base name.
-    Assumes the .wav file exists in WATCHED_FOLDER_PATH.
-    Steps:
-    1. Run process_audio.bat
-    2. Convert generated .ass to .srt using ffmpeg
-    3. Run translate_srt_to_chinese.bat
-    """
-    logger.info("[START] Processing '%s.wav'...", base_filename)
-
-    try:
-        # --- Step 1: Run process_audio.bat ---
-        logger.info("[Step 1/3] Running process_audio.bat for '%s'...", base_filename)
-        # The batch script expects the filename without extension and
-        # should be run from the script's directory
-        cmd_step1 = [PROCESS_AUDIO_SCRIPT, base_filename]
-        result1 = subprocess.run(
-            cmd_step1,
-            check=True,              # Raises CalledProcessError on non-zero exit
-            capture_output=True,     # Captures stdout and stderr
-            text=True,               # Returns strings, not bytes
-            cwd=SCRIPT_DIR           # Run in the script's directory
-        )
-        logger.info("[Step 1/3] process_audio.bat completed successfully.")
-
-        # --- Step 2: Convert .ass to .srt using ffmpeg ---
-        logger.info("[Step 2/3] Converting '%s.ass' to '%s.srt'...", base_filename, base_filename)
-        # The batch script creates files in SCRIPT_DIR, not WATCHED_FOLDER_PATH
-        ass_file = os.path.join(SCRIPT_DIR, f"{base_filename}.ass")
-        srt_file = os.path.join(SCRIPT_DIR, f"{base_filename}.srt")
-
-        # Check if the .ass file was actually created by process_audio.bat
-        if not os.path.exists(ass_file):
-             raise FileNotFoundError(f"Expected .ass file not found: {ass_file}")
-
-        # Run ffmpeg to convert .ass to .srt
-        # Run it in the script directory
-        cmd_step2 = [FFMPEG_PATH, "-y", "-i", ass_file, srt_file]
-        result2 = subprocess.run(
-            cmd_step2,
-            check=True,
-            capture_output=True,
-            text=True,
-            cwd=SCRIPT_DIR
-        )
-        logger.info("[Step 2/3] Conversion to .srt completed successfully.")
-
-        # --- Step 3: Run translate_srt_to_chinese.bat ---
-        logger.info("[Step 3/3] Running translate_srt_to_chinese.bat for '%s'...", base_filename)
-        # The batch script expects the filename without extension
-        cmd_step3 = [TRANSLATE_SRT_SCRIPT, base_filename]
-        result3 = subprocess.run(
-            cmd_step3,
-            check=True,
-            capture_output=True,
-            text=True,
-            cwd=SCRIPT_DIR
-        )
-        logger.info("[Step 3/3] translate_srt_to_chinese.bat completed successfully.")
-
-        # --- Final Success ---
-        final_file = os.path.join(SCRIPT_DIR, f"{base_filename}_zh-tw.srt")
-        logger.info("[SUCCESS] Finished processing '%s.wav'.", base_filename)
-        logger.info("         Final output file: %s", final_file)
-
-        # Move all output files to the Work_room folder
-        output_files = [
-            f"{base_filename}.ass",
-            f"{base_filename}.srt",
-            f"{base_filename}.mp4",
-            f"{base_filename}_zh-tw.srt"
-        ]
-        
-        for file in output_files:
-            src_path = os.path.join(SCRIPT_DIR, file)
-            dst_path = os.path.join(WATCHED_FOLDER_PATH, file)
-            if os.path.exists(src_path):
-                try:
-                    os.rename(src_path, dst_path)
-                    logger.info("         Moved %s to Work_room folder", file)
-                except Exception as e:
-                    logger.warning("         Could not move %s to Work_room folder: %s", file, e)
-
-    except subprocess.CalledProcessError as e:
-        # This block handles errors from any of the subprocess.run calls
-        logger.error("[ERROR] A subprocess failed during the processing of '%s.wav'.", base_filename)
-        logger.error("        Failed command: %s", ' '.join(e.cmd))
-        logger.error("        Return code: %s", e.returncode)
-        if e.stdout:
-            logger.error("        STDOUT:\n%s", e.stdout)
-        if e.stderr:
-            logger.error("        STDERR:\n%s", e.stderr)
-    except FileNotFoundError as e:
-        # Handles specific file not found errors
-        logger.error("[ERROR] File not found during processing of '%s.wav': %s", base_filename, e)
-    except Exception as e:
-        # Handles any other unexpected errors
-        logger.exception("An unexpected error occurred while processing %s", base_filename)
+def process_wav_file(base_filename):\n    \"\"\"\n    Executes the full workflow for a given .wav file base name.\n    Assumes the .wav file exists in WATCHED_FOLDER_PATH.\n    Steps:\n    1. Run process_audio.bat\n    2. Convert generated .ass to .srt using ffmpeg\n    3. Run translate_srt_to_chinese.bat\n    \"\"\"\n    logger.info(\"[START] Processing '%s.wav'...\", base_filename)\n\n    try:\n        # --- Step 1: Run process_audio.bat ---\n        step1_process_audio(base_filename)\n\n        # --- Step 2: Convert .ass to .srt using ffmpeg ---\n        step2_ass_to_srt(base_filename)\n\n        # --- Step 3: Run translate_srt_to_chinese.bat ---\n        step3_translate_srt(base_filename)\n\n        # --- Final Success ---\n        final_file = os.path.join(SCRIPT_DIR, f\"{base_filename}_zh-tw.srt\")\n        logger.info(\"[SUCCESS] Finished processing '%s.wav'.\", base_filename)\n        logger.info(\"         Final output file: %s\", final_file)\n\n        # Move all output files to the Work_room folder\n        output_files = [\n            f\"{base_filename}.ass\",\n            f\"{base_filename}.srt\",\n            f\"{base_filename}.mp4\",\n            f\"{base_filename}_zh-tw.srt\"\n        ]\n        \n        for file in output_files:\n            src_path = os.path.join(SCRIPT_DIR, file)\n            dst_path = os.path.join(WATCHED_FOLDER_PATH, file)\n            if os.path.exists(src_path):\n                try:\n                    shutil.move(src_path, dst_path)\n                    logger.info(\"         Moved %s to Work_room folder\", file)\n                except Exception as e:\n                    logger.warning(\"         Could not move %s to Work_room folder: %s\", file, e)\n\n    except subprocess.CalledProcessError as e:\n        # This block handles errors from any of the subprocess.run calls\n        logger.error(\"[ERROR] A subprocess failed during the processing of '%s.wav'.\", base_filename)\n        logger.error(\"        Failed command: %s\", ' '.join(e.cmd))\n        logger.error(\"        Return code: %s\", e.returncode)\n        if e.stdout:\n            logger.error(\"        STDOUT:\\n%s\", e.stdout)\n        if e.stderr:\n            logger.error(\"        STDERR:\\n%s\", e.stderr)\n    except FileNotFoundError as e:\n        # Handles specific file not found errors\n        logger.error(\"[ERROR] File not found during processing of '%s.wav': %s\", base_filename, e)\n    except Exception as e:\n        # Handles any other unexpected errors\n        logger.exception(\"An unexpected error occurred while processing %s\", base_filename)
 
 
 # --- Main Script Execution ---
