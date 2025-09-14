@@ -3,6 +3,8 @@ import sys
 import subprocess
 import time
 import logging
+import queue
+import threading
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
@@ -21,6 +23,29 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(), logging.FileHandler(os.path.join(SCRIPT_DIR, "audio_workflow.log"), encoding="utf-8")]
 )
 logger = logging.getLogger(__name__)
+
+# --- Work Queue and Worker Thread ---
+# Create a queue for processing tasks
+work_q = queue.Queue()
+
+def worker_loop():
+    """Worker thread function that processes WAV files from the queue."""
+    while True:
+        task = work_q.get()
+        if task is None:
+            break
+        try:
+            base = task
+            logger.info("Worker starting processing for %s", base)
+            process_wav_file(base)  # unchanged function – will run in worker
+        except Exception:
+            logger.exception("Worker error processing %s", base)
+        finally:
+            work_q.task_done()
+
+# Start the worker thread
+worker_thread = threading.Thread(target=worker_loop, daemon=True)
+worker_thread.start()
 
 
 # --- Helper Functions ---
@@ -102,10 +127,9 @@ class WavHandler(FileSystemEventHandler):
                 # e.g., "C:\path\work_room\myfile.wav" -> "myfile"
                 base_filename = os.path.splitext(os.path.basename(file_path))[0]
                 
-                # Start the processing workflow for this file
-                # This runs in the observer's thread. For heavy tasks,
-                # consider using a queue and a worker thread.
-                process_wav_file(base_filename)
+                # Enqueue the task for processing by the worker thread
+                logger.info("Enqueuing %s for processing", base_filename)
+                work_q.put(base_filename)
 
 
 # --- Core Processing Logic ---
