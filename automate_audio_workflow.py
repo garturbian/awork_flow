@@ -152,11 +152,22 @@ def step1_process_audio(base):
     orig = os.path.join(SCRIPT_DIR, f"{base}.ass.orig")
     if not os.path.exists(orig):
         shutil.copy2(ass_file, orig)
+        # Wait until the file is stable before computing hash
+        if not wait_until_stable(ass_file):
+            logger.warning("ASS file %s did not stabilize", ass_file)
+            return
         meta = load_meta(base)
         meta["ass_hash"] = file_hash(ass_file)
         meta.setdefault("steps_completed", {})["process_audio"] = True
         meta["last_updated"] = datetime.datetime.utcnow().isoformat()
         save_meta(base, meta)
+        
+        # Provide convenience function to open the .ass file
+        try:
+            os.startfile(ass_file)
+            logger.info("Opened %s in default editor", ass_file)
+        except Exception as e:
+            logger.debug("Could not open %s: %s", ass_file, e)
 
 
 def step2_ass_to_srt(base):
@@ -226,6 +237,15 @@ def step3_translate_srt(base):
                 logger.info("         Moved %s to Work_room folder", file)
             except Exception as e:
                 logger.warning("         Could not move %s to Work_room folder: %s", file, e)
+    
+    # Provide convenience function to open the final translated SRT file
+    final_srt = os.path.join(WATCHED_FOLDER_PATH, f"{base}_zh-tw.srt")
+    if os.path.exists(final_srt):
+        try:
+            os.startfile(final_srt)
+            logger.info("Opened final translation %s in default editor", final_srt)
+        except Exception as e:
+            logger.debug("Could not open %s: %s", final_srt, e)
 
 
 # --- File Event Handlers ---
