@@ -33,6 +33,18 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Full path to the watched folder
+WATCHED_FOLDER_PATH = os.path.join(SCRIPT_DIR, WATCHED_FOLDER_NAME)
+
+# Paths to the batch scripts (relative to SCRIPT_DIR)
+PROCESS_AUDIO_SCRIPT = os.path.join(SCRIPT_DIR, "process_audio.bat")
+TRANSLATE_SRT_SCRIPT = os.path.join(SCRIPT_DIR, "translate_srt_to_chinese.bat")
+
+# Path to ffmpeg.exe (assuming it's in the same directory as this script)
+# If ffmpeg is in your system PATH, you can just use "ffmpeg" instead.
+FFMPEG_PATH = os.path.join(SCRIPT_DIR, "ffmpeg.exe")
+# FFMPEG_PATH = "ffmpeg" # Use this if relying on PATH
+
 # --- Work Queue and Worker Thread ---
 # Create a queue for processing tasks
 work_q = queue.Queue()
@@ -282,38 +294,6 @@ def step3_translate_srt(base):
             logger.debug("Could not open %s: %s", final_srt, e)
 
 
-# --- File Event Handlers ---
-class AssModifiedHandler(FileSystemEventHandler):
-    """Handles file system events for .ass file modifications."""
-    
-    def on_modified(self, event):
-        """Triggered when a file or directory is modified."""
-        if event.is_directory:
-            return
-        if not event.src_path.lower().endswith(".ass"):
-            return
-            
-        base = os.path.splitext(os.path.basename(event.src_path))[0]
-        try:
-            # wait until stable then compute hash
-            if not wait_until_stable(event.src_path):
-                logger.warning("Edited .ass %s did not stabilize", event.src_path)
-                return
-            new_hash = file_hash(event.src_path)
-        except Exception:
-            return
-            
-        meta = load_meta(base)
-        old_hash = meta.get("ass_hash")
-        if old_hash != new_hash:
-            logger.info("Detected edited .ass for %s — scheduling downstream steps", base)
-            meta["ass_hash"] = new_hash
-            meta.setdefault("steps_completed", {}).pop("ass_to_srt", None)
-            meta.setdefault("steps_completed", {}).pop("translate", None)
-            save_meta(base, meta)
-            work_q.put(base)  # worker should be adjusted to run only step2+3 if meta shows process_audio done
-
-
 # --- Helper Functions ---
 def wait_until_stable(path, timeout=60, stable_time=1.0, poll=0.5):
     """
@@ -353,20 +333,38 @@ def wait_until_stable(path, timeout=60, stable_time=1.0, poll=0.5):
             return False
 
 
-# --- Configuration ---
-# Directory to watch for new .wav files (relative to this script's location)
-WATCHED_FOLDER_PATH = os.path.join(SCRIPT_DIR, WATCHED_FOLDER_NAME)
+# --- File Event Handlers ---
+class AssModifiedHandler(FileSystemEventHandler):
+    """Handles file system events for .ass file modifications."""
+    
+    def on_modified(self, event):
+        """Triggered when a file or directory is modified."""
+        if event.is_directory:
+            return
+        if not event.src_path.lower().endswith(".ass"):
+            return
+            
+        base = os.path.splitext(os.path.basename(event.src_path))[0]
+        try:
+            # wait until stable then compute hash
+            if not wait_until_stable(event.src_path):
+                logger.warning("Edited .ass %s did not stabilize", event.src_path)
+                return
+            new_hash = file_hash(event.src_path)
+        except Exception:
+            return
+            
+        meta = load_meta(base)
+        old_hash = meta.get("ass_hash")
+        if old_hash != new_hash:
+            logger.info("Detected edited .ass for %s — scheduling downstream steps", base)
+            meta["ass_hash"] = new_hash
+            meta.setdefault("steps_completed", {}).pop("ass_to_srt", None)
+            meta.setdefault("steps_completed", {}).pop("translate", None)
+            save_meta(base, meta)
+            work_q.put(base)  # worker should be adjusted to run only step2+3 if meta shows process_audio done
 
-# Paths to the batch scripts (relative to SCRIPT_DIR)
-PROCESS_AUDIO_SCRIPT = os.path.join(SCRIPT_DIR, "process_audio.bat")
-TRANSLATE_SRT_SCRIPT = os.path.join(SCRIPT_DIR, "translate_srt_to_chinese.bat")
 
-# Path to ffmpeg.exe (assuming it's in the same directory as this script)
-# If ffmpeg is in your system PATH, you can just use "ffmpeg" instead.
-FFMPEG_PATH = os.path.join(SCRIPT_DIR, "ffmpeg.exe")
-# FFMPEG_PATH = "ffmpeg" # Use this if relying on PATH
-
-# --- Custom Event Handler ---
 class WavHandler(FileSystemEventHandler):
     """
     Handles file system events. Specifically looks for new .wav files.
@@ -396,10 +394,6 @@ class WavHandler(FileSystemEventHandler):
                 # Enqueue the task for processing by the worker thread
                 logger.info("Enqueuing %s for processing", base_filename)
                 work_q.put(base_filename)
-
-
-# --- Core Processing Logic ---
-def process_wav_file(base_filename):\n    \"\"\"\n    Executes the full workflow for a given .wav file base name.\n    Assumes the .wav file exists in WATCHED_FOLDER_PATH.\n    Steps:\n    1. Run process_audio.bat\n    2. Convert generated .ass to .srt using ffmpeg\n    3. Run translate_srt_to_chinese.bat\n    \"\"\"\n    logger.info(\"[START] Processing '%s.wav'...\", base_filename)\n\n    try:\n        # --- Step 1: Run process_audio.bat ---\n        step1_process_audio(base_filename)\n\n        # --- Step 2: Convert .ass to .srt using ffmpeg ---\n        step2_ass_to_srt(base_filename)\n\n        # --- Step 3: Run translate_srt_to_chinese.bat ---\n        step3_translate_srt(base_filename)\n\n        # --- Final Success ---\n        final_file = os.path.join(SCRIPT_DIR, f\"{base_filename}_zh-tw.srt\")\n        logger.info(\"[SUCCESS] Finished processing '%s.wav'.\", base_filename)\n        logger.info(\"         Final output file: %s\", final_file)\n\n        # Move all output files to the Work_room folder\n        output_files = [\n            f\"{base_filename}.ass\",\n            f\"{base_filename}.srt\",\n            f\"{base_filename}.mp4\",\n            f\"{base_filename}_zh-tw.srt\"\n        ]\n        \n        for file in output_files:\n            src_path = os.path.join(SCRIPT_DIR, file)\n            dst_path = os.path.join(WATCHED_FOLDER_PATH, file)\n            if os.path.exists(src_path):\n                try:\n                    shutil.move(src_path, dst_path)\n                    logger.info(\"         Moved %s to Work_room folder\", file)\n                except Exception as e:\n                    logger.warning(\"         Could not move %s to Work_room folder: %s\", file, e)\n\n    except subprocess.CalledProcessError as e:\n        # This block handles errors from any of the subprocess.run calls\n        logger.error(\"[ERROR] A subprocess failed during the processing of '%s.wav'.\", base_filename)\n        logger.error(\"        Failed command: %s\", ' '.join(e.cmd))\n        logger.error(\"        Return code: %s\", e.returncode)\n        if e.stdout:\n            logger.error(\"        STDOUT:\\n%s\", e.stdout)\n        if e.stderr:\n            logger.error(\"        STDERR:\\n%s\", e.stderr)\n    except FileNotFoundError as e:\n        # Handles specific file not found errors\n        logger.error(\"[ERROR] File not found during processing of '%s.wav': %s\", base_filename, e)\n    except Exception as e:\n        # Handles any other unexpected errors\n        logger.exception(\"An unexpected error occurred while processing %s\", base_filename)
 
 
 # --- Main Script Execution ---
