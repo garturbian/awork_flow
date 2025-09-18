@@ -284,14 +284,12 @@ def step3_translate_srt(base):
                 except Exception as e:
                     logger.warning("         Could not move %s from artifacts to Work_room folder: %s", file, e)
     
-    # Provide convenience function to open the final translated SRT file
+    # Log completion instead of automatically opening the file
     final_srt = os.path.join(WATCHED_FOLDER_PATH, f"{base}_zh-tw.srt")
     if os.path.exists(final_srt):
-        try:
-            os.startfile(final_srt)
-            logger.info("Opened final translation %s in default editor", final_srt)
-        except Exception as e:
-            logger.debug("Could not open %s: %s", final_srt, e)
+        logger.info("Translation completed. Final file is located at: %s", final_srt)
+    else:
+        logger.warning("Expected final translation file not found: %s", final_srt)
 
 
 # --- Helper Functions ---
