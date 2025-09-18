@@ -70,3 +70,6 @@ Work_room/
 test_*.py
 *_test.py
 tests/
+
+# Not needed files
+not_needed/
